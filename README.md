@@ -2,7 +2,7 @@
 
 A Tensorflow neural net was trained on the withdrawal status of students who had been given offers other than the ones they wanted over the past 4 years. Data was augmented by recoding (for example was this university their first or insurance choice?) or teasing out values (for example when they student handed in their application - look how many finished at 1am!), sanitised to comply with GDPR, and the minor class oversampled with [SMOTE](https://arxiv.org/pdf/1106.1813.pdf) due to imbalanced classes. 
 
-Future augmentation could include how close the application or acceptance date was to the relevant deadline, or the disparity between the university rankings of the applied course and the given course (as it may not be the course perse that has more withdrawals, but how much of a compromise the course would be to the student). Both aspects can be web scraped.
+Future augmentation could include how close the application or acceptance date was to the relevant deadline, or the disparity between the university rankings of the applied course and the given course (as it may not be the course itself that has more withdrawals, but how much of a compromise the course would be to the student). Both aspects can be web scraped.
 
 <p align="center">
 <img align="centre" alt="SQL" width="300px" style="padding-right:10px;" src="https://user-images.githubusercontent.com/122735369/216096417-ac8b51b2-06b8-43fd-ae95-ecd34f2ea7ee.png" /> 
