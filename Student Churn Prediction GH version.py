@@ -70,7 +70,7 @@ combined_df['Alternative or original campus'] = np.where(combined_df['Alternativ
 del(admissions_data,student_data)
 
 # =============================================================================
-# Diagnostic Analysis (What happened?)
+# Descriptive Analysis (What happened?)
 # =============================================================================
 
 #quick check to see how many withdrawals we have
