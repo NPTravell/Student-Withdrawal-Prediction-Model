@@ -1,6 +1,8 @@
 # Student-Withdrawal-Prediction-Model
 
-A Tensorflow neural net was trained on the withdrawal status of students who had been given offers other than the ones they wanted over the past 4 years. Data was augmented by recoding (for example was this university their first or insurance choice?) or teasing out values (for example when they student handed in their application - look how many finished at 1am!), sanitised to comply with GDPR, and the minor class oversampled with [SMOTE](https://arxiv.org/pdf/1106.1813.pdf) due to imbalanced classes. 
+*"Do we need to worry about students who are given alternate offers - are they dropping out more than normal?"*
+
+To answer this, a Tensorflow neural net was trained on the withdrawal status of students who had been given offers other than the ones they wanted over the past 4 years. Data was augmented (for example - indicating if this university their first or insurance choice, or when the student handed in their application - look how many finished at 1am!), sanitised to comply with GDPR, and the minor class oversampled with [SMOTE](https://arxiv.org/pdf/1106.1813.pdf) due to imbalanced classes. 
 
 Future augmentation could include how close the application or acceptance date was to the relevant deadline, or the disparity between the university rankings of the applied course and the given course (as it may not be the course itself that has more withdrawals, but how much of a compromise the course would be to the student). Both aspects can be web scraped.
 
