@@ -2,7 +2,7 @@
 
 *"Do we need to worry about students who are given alternative offers - who is at risk of dropping out?"*
 
-To answer this, a 'super learner' ensemble was utilised. Data was augmented (for example - extracting the hour that the student handed in their application. Note: look how many finished at 1am!), sanitised (and randomised for presentation) to comply with GDPR, and the minor class oversampled with [SMOTE](https://arxiv.org/pdf/1106.1813.pdf) due to imbalanced classes. 
+To answer this, a 'super learner' ensemble was utilised. The data was augmented with additional columns (for example - extracting the hour that the student handed in their application. Note: look how many finished at 1am!), sanitised (and randomised for presentation) to comply with GDPR, and the minor class was oversampled via [SMOTE](https://arxiv.org/pdf/1106.1813.pdf). 
 
 Future augmentation could include how close the application or acceptance date was to the relevant deadline (which may imply enthusiasm or current conflicting schedules), or the disparity between leaderboard rankings of the course the student applied for and the coruse that they received (as it may not be the course itself that has more withdrawals, but how much of a compromise the course would personally be to the student). Both aspects can be web scraped.
 
