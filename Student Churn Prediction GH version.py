@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-Student Churn Model
+Alternative offer withdrawal prediction model
 
-Trained on withdrawal data of students given places OTHER than the one they wanted
-Train model is then applied to current student data to predict who will withdraw and where further attention is required
+- Trained on withdrawal data of students given places OTHER than the one they wanted
+- Model utilises stacked generalisation to create a meta model (currently logistic regression)
+and hyperparameter tuning (gridsearch for full exploration, though Bayesian recommended for speed)
 
+NOTE: GDPR COMPLIANT AND ANONYMISED FOR GITHUB
 """
 
 # =============================================================================
@@ -15,42 +17,40 @@ Train model is then applied to current student data to predict who will withdraw
 import os
 import pandas as pd
 import numpy as np
-#for EDA
-import matplotlib.pyplot as plt
-#for model training
-from sklearn.model_selection import train_test_split
-from imblearn.over_sampling import SMOTE
-#model fitting
-from tensorflow.keras.models import Sequential, load_model
-from tensorflow.keras.layers import Dense
-from sklearn.metrics import accuracy_score
-from sklearn.metrics import confusion_matrix
-import itertools
-from sklearn.metrics import classification_report
-# distributing predictive analytics
-import yagmail
 
 #set up directory
 os.getcwd()
 os.chdir('')
 os.listdir(os.getcwd())
 
-#load admissions data and discard extraneous columns
-admissions_data=pd.read_csv('./training_data/Admissions Data.csv')
+#load admissions data, discard extraneous columns, and rename ambiguous columns
+admissions_data=pd.read_csv('Admissions Data.csv')
 admissions_data=admissions_data[['Student Code','pre_nqa.DRL_IDRC','pre_nqa.drl_timestamp','min_nqa.DRL_IDRC','min_nqa.drl_timestamp','pre_nqa.DRL_MCRC','min_nqa.DRL_MCRC']]
 admissions_data.rename(columns={'pre_nqa.DRL_IDRC':'application_admissions_code','min_nqa.DRL_IDRC':'acceptance_admissions_code','pre_nqa.drl_timestamp':'application_timestamp','min_nqa.drl_timestamp':'acceptance_timestamp','pre_nqa.DRL_MCRC':'application_discipline_code','min_nqa.DRL_MCRC':'acceptance_discipline_code'},inplace=True)
 
-#augment admissions data with day(in week)/month/hour of application/acceptance
-admissions_data['application_timestamp'] = pd.to_datetime(admissions_data['application_timestamp'])
-admissions_data['acceptance_timestamp'] = pd.to_datetime(admissions_data['acceptance_timestamp'])
-admissions_data['application_weekday'] = (admissions_data['application_timestamp'].dt.dayofweek)+1
-admissions_data['application_month'] = admissions_data['application_timestamp'].dt.month
-admissions_data['application_year'] = admissions_data['application_timestamp'].dt.year
-admissions_data['application_hour'] = admissions_data['application_timestamp'].dt.hour
-admissions_data['acceptance_weekday'] = (admissions_data['acceptance_timestamp'].dt.dayofweek)+1
-admissions_data['acceptance_month'] = admissions_data['acceptance_timestamp'].dt.month
-admissions_data['acceptance_year'] = admissions_data['acceptance_timestamp'].dt.year
-admissions_data['acceptance_hour'] = admissions_data['acceptance_timestamp'].dt.hour
+#function to add "_timestamp" to a value from a list, convert the column with that string name to datetime, then augment that column
+def columns_to_datetime(df,stamps,augments):
+    for i in stamps:
+        column=str(i)+'_timestamp'
+        df[column]=pd.to_datetime(df[column])    
+        for j in augments:
+            augmented_column_name=str(i)+'_'+str(j)
+            if j == 'weekday':
+                df[augmented_column_name]=(df[column].dt.dayofweek)+1
+            if j == 'month':
+                df[augmented_column_name]=df[column].dt.month
+            if j == 'year':
+                df[augmented_column_name]=df[column].dt.year
+            if j == 'hour':
+                df[augmented_column_name]=df[column].dt.hour  
+
+#define columns and augments
+timestamps_to_augment=['application','acceptance']
+augments=['weekday','month','year','hour']
+
+#deploy function
+columns_to_datetime(admissions_data,timestamps_to_augment,augments)
+del(timestamps_to_augment,augments)
 
 #augment admissions data by :
     # extracting if application/offer was conditional/unconditional
@@ -61,226 +61,266 @@ admissions_data['firstchoice_application'] = np.where(admissions_data['applicati
 admissions_data['unconditional_application'] = np.where(admissions_data['application_admissions_code'].str[:1] == 'U', 1, 0)
 admissions_data['discipline_code_disparity']=np.where(admissions_data['application_discipline_code'] == admissions_data['acceptance_discipline_code'], 1, 0)
 
-#load student data, filter to relevant students, and merge admissions data
-student_data=pd.read_csv('./training_data/Student Data.csv')
-student_data=student_data[student_data['Alternative Offer Marker'] == 'Y'] #we're only looking at these
-student_data.rename(columns={'pre_nqa.Campus':'Campus_Chosen','Campus Group':'Campus_Given'},inplace=True) #making column names clearer
+#grab alternative offer flag and campus applied for/accepted from student dataset
+student_data=pd.read_csv('Student Data.csv')
+student_data=student_data[student_data['Alternative Offer Marker'] == 'Y']
+student_data.rename(columns={'pre_nqa.Campus':'Campus_Chosen','Campus Group':'Campus_Given'},inplace=True)
 combined_df=pd.merge(student_data,admissions_data,how='left',on='Student Code')
-combined_df['Alternative or original campus'] = np.where(combined_df['Alternative or original campus'] == 'Studying at campus applied to ', 1, 0) #turning lengthy strings into a 1 or 0
 del(admissions_data,student_data)
 
-# =============================================================================
-# Descriptive Analysis (What happened?)
-# =============================================================================
+#highlight if the campus differs from what the student applied for
+combined_df['Alternative or original campus'] = np.where(combined_df['Alternative or original campus'] == 'Studying at campus applied to ', 1, 0)
 
-#quick check to see how many withdrawals we have
-combined_df['Withdrawal Marker'].value_counts()
-quickstat=combined_df.groupby('Withdrawal Marker').mean()
-del(quickstat)
-
-#total withdrawals per year chart plot 
-acyr_withdrawals=(combined_df.groupby(['Withdrawal Marker','Cohort Year']).size().reset_index(name='counts')).sort_values('Cohort Year', ascending=True)
-acyr_withdrawals=acyr_withdrawals.pivot('Cohort Year', 'Withdrawal Marker', "counts")
-acyr_withdrawals = acyr_withdrawals.rename_axis('Cohort Year').reset_index()
-
-withdrawals = acyr_withdrawals['Y']
-colors = ['orange' if (h < max(withdrawals)) else 'red' for h in withdrawals]
-
-y1 = acyr_withdrawals['Y']
-x = np.arange(len(acyr_withdrawals))
-width=0.5
-fig, ax = plt.subplots(figsize=(10,5))
-for i,j in zip(x,y1):
-    ax.annotate(str(j),xy=(i,j),ha='center', va='bottom',fontsize=9)
-plt.bar(acyr_withdrawals['Cohort Year'],acyr_withdrawals['N'],width=width,label='Remained') 
-plt.bar(acyr_withdrawals['Cohort Year'],acyr_withdrawals['Y'],width=width,label='Withdrew',color=colors) 
-plt.legend(frameon=True, fontsize=10)
-plt.xlabel('Cohort Year')
-plt.ylabel('Withdrawals')
-plt.title('How Many Alternative Offer Students Withdrew per Cohort Year?')
-fig.savefig('./training_graphs/acyr_withdrawals.png', bbox_inches='tight')
-plt.show()
-
-#withdrawals per college chart plot
-coll_withdrawals=(combined_df.groupby(['Withdrawal Marker','Current College']).size().reset_index(name='counts')).sort_values('Current College', ascending=True)
-coll_withdrawals=coll_withdrawals.pivot('Current College', 'Withdrawal Marker', "counts")
-coll_withdrawals = coll_withdrawals.rename_axis('College').reset_index()
-
-withdrawals = coll_withdrawals['Y']
-colors = ['orange' if (h < max(withdrawals)) else 'red' for h in withdrawals]
-
-y1 = coll_withdrawals['Y']
-x = np.arange(len(coll_withdrawals))
-
-width=0.5
-fig, ax = plt.subplots(figsize=(10,5))
-for i,j in zip(x,y1):
-    ax.annotate(str(j),xy=(i,j),ha='center', va='bottom',fontsize=9)
-plt.bar(coll_withdrawals['College'],coll_withdrawals['N'],width=width,label='Remained') 
-plt.bar(coll_withdrawals['College'],coll_withdrawals['Y'],width=width,label='Withdrew',color=colors) 
-plt.legend(frameon=True, fontsize=10)
-plt.xlabel('College')
-plt.ylabel('Withdrawals')
-plt.title('How Many Alternative Offer Students Withdrew per College?')
-fig.savefig('./training_graphs/coll_withdrawals.png', bbox_inches='tight')
-plt.show()
-
-#withdrawals per campus (from each campus) chart plot
-camp_withdrawals=combined_df[combined_df['Withdrawal Marker']=='Y']
-camp_withdrawals=(camp_withdrawals.groupby(['Campus_Given','Campus_Chosen']).size().reset_index(name='counts')).sort_values('Campus_Chosen', ascending=True)
-camp_withdrawals=camp_withdrawals.pivot('Campus_Given', 'Campus_Chosen', "counts")
-camp_withdrawals = camp_withdrawals.rename_axis('Campus_Chosen').reset_index()
-
-y1 = camp_withdrawals[1]
-x = np.arange(len(camp_withdrawals))
-
-width=0.5
-fig, ax = plt.subplots(figsize=(10,5))
-for i,j in zip(x,y1):
-    ax.annotate(str(j),xy=(i,j),ha='center', va='bottom',fontsize=9)
-plt.bar(camp_withdrawals['Campus_Chosen'],camp_withdrawals[1],width=width,label='1 Given',color=colors) 
-plt.legend(frameon=True, fontsize=10)
-plt.xlabel('Campus Chosen')
-plt.ylabel('Withdrawals')
-plt.title('How Did Withdrawals Differ Between Chosen and Given College??')
-fig.savefig('./training_graphs/camp_withdrawals.png', bbox_inches='tight')
-plt.show()
-
-#what time of day do students submit and accept their application chart plot
-time_withdrawals=combined_df[['Student Code','acceptance_hour']]
-time_withdrawals['stage']='acceptance'
-time_withdrawals.rename(columns={'acceptance_hour':'hour'},inplace=True)
-time_withdrawals_app=combined_df[['Student Code','application_hour']]
-time_withdrawals_app['stage']='application'
-time_withdrawals_app.rename(columns={'application_hour':'hour'},inplace=True)
-time_withdrawals=time_withdrawals.append(time_withdrawals_app)
-del(time_withdrawals_app)
-
-time_withdrawals=(time_withdrawals.groupby(['hour','stage']).size().reset_index(name='counts')).sort_values('hour', ascending=True)
-time_withdrawals=time_withdrawals.pivot('hour', 'stage', "counts").plot(kind='bar')
-plt.show()
-
-#dayofweek chart plot
-day_withdrawals=combined_df[['Student Code','acceptance_weekday']]
-day_withdrawals['stage']='acceptance'
-day_withdrawals.rename(columns={'acceptance_weekday':'weekday'},inplace=True)
-day_withdrawals_app=combined_df[['Student Code','application_weekday']]
-day_withdrawals_app['stage']='application'
-day_withdrawals_app.rename(columns={'application_weekday':'weekday'},inplace=True)
-day_withdrawals=day_withdrawals.append(day_withdrawals_app)
-del(day_withdrawals_app)
-day_withdrawals=(day_withdrawals.groupby(['weekday','stage']).size().reset_index(name='counts')).sort_values('weekday', ascending=True)
-day_withdrawals=day_withdrawals.pivot('weekday', 'stage', "counts").plot(kind='bar')
-plt.show()
-
-#month chart plot
-month_withdrawals=combined_df[['Student Code','acceptance_month']]
-month_withdrawals['stage']='acceptance'
-month_withdrawals.rename(columns={'acceptance_month':'month'},inplace=True)
-month_withdrawals_app=combined_df[['Student Code','application_month']]
-month_withdrawals_app['stage']='application'
-month_withdrawals_app.rename(columns={'application_month':'month'},inplace=True)
-month_withdrawals=month_withdrawals.append(month_withdrawals_app)
-del(month_withdrawals_app)
-
-month_withdrawals=(month_withdrawals.groupby(['month','stage']).size().reset_index(name='counts')).sort_values('month', ascending=True)
-month_withdrawals=month_withdrawals.pivot('month', 'stage', "counts").plot(kind='bar')
-plt.show()
-
-#clean up
-del(acyr_withdrawals,camp_withdrawals,coll_withdrawals,day_withdrawals,time_withdrawals,month_withdrawals)
+#save
+combined_df.to_csv('combined_df.csv',index=False)
 
 # =============================================================================
 # # Diagnostic analysis (why it happened) 
 # =============================================================================
 
-#split df into (dummy) features and target
-X = pd.get_dummies(combined_df.drop(['application_year','acceptance_year','Count','Alternative Offer Marker', #all students are alternative offer holders
-                                     'Withdrawal Reason Group', 
+#file operating
+import os
+import pandas as pd
+import pickle
+
+#for data shaping
+from imblearn.over_sampling import SMOTEN
+from sklearn.preprocessing import OrdinalEncoder
+
+#training models
+from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.svm import SVC
+from sklearn.naive_bayes import GaussianNB
+from sklearn.ensemble import AdaBoostClassifier
+from sklearn.ensemble import BaggingClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import ExtraTreesClassifier
+from mlens.ensemble import SuperLearner
+#from sklearn.metrics import brier_score_loss
+
+#for visualisation
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix
+import itertools
+from sklearn.metrics import classification_report
+
+#ordinally encode features and resample dataset if unbalanced
+def encode_and_resample(X,y):
+    for column in X:
+        if (X[column].isna().sum() >0):
+            print(column+" has: "+str(X[column].isna().sum()) + " NAs")
+    X_col_names=X.columns
+    oe = OrdinalEncoder()
+    oe.fit(X)
+    X = oe.transform(X)
+    X=pd.DataFrame(data=X,columns=X_col_names)
+    prior=y.value_counts()
+    if prior.iloc[0]/prior.iloc[1]>3: #can't find a definition of imbalanced, so going for 1:3
+        print("dataset imbalanced")
+    sampler = SMOTEN(random_state=0) #SmoteNC works on categorical and numerical (different algo!), but i've already encoded - I might be missing something here
+    X, y = sampler.fit_resample(X, y)
+    posterior=y.value_counts()
+    if posterior.iloc[0]==posterior.iloc[1]:
+        print("dataset now balanced")
+    X=X.to_numpy() #out of fold predictions function needs arrary
+    y=y.to_numpy()
+    return(X,y)
+
+#extract features and target, then encode and resample if required, then split into training and testing
+def prep_features_and_targets(df,cols_to_remove,target):
+    X=df
+    for i in cols_to_remove:
+        X=X.drop([i],axis=1)
+    X_cols=X.columns
+    y = df[target].apply(lambda x: 1 if x=='Y' else 0)
+    X,y=encode_and_resample(X,y) 
+    X, X_val, y, y_val = train_test_split(X, y, test_size=0.50)
+    return(X, X_val, y, y_val,X_cols)
+
+# create a list of base-models     
+#note only a few fields are utilised, but we have 100s of tables so deep learning could be valuable!
+def get_models():
+    models = list()
+    models.append(LogisticRegression(solver='liblinear'))
+    models.append(DecisionTreeClassifier())
+    models.append(SVC(gamma='scale', probability=True))
+    models.append(GaussianNB())
+    models.append(KNeighborsClassifier())
+    models.append(AdaBoostClassifier())
+    models.append(BaggingClassifier(n_estimators=10))
+    models.append(RandomForestClassifier(n_estimators=10))
+    models.append(ExtraTreesClassifier(n_estimators=10))
+    return models
+
+# create the super learner
+def get_super_learner(X):
+    ensemble = SuperLearner(scorer=accuracy_score, folds=10, shuffle=True, sample_size=len(X))
+    # add base models
+    models = get_models()
+    ensemble.add(models)
+    
+    #fine best hyperparameters for meta_model
+    search_space ={'solver': ['newton-cg', 'lbfgs','sag', 'saga'],
+    'penalty': ['l2', 'none'],       #not all penalties work with all solvers - I have lengthier code to implement more combinations in progress
+    'C' : [0.01, 0.1, 1],
+    'max_iter': [50, 100, 200]}
+    tuned_model = GridSearchCV(estimator=LogisticRegression(),
+                                param_grid=search_space,
+                                cv=5,
+                                scoring='accuracy')
+    tuned_model.fit(X, y) #ignore this error
+    params=tuned_model.best_params_
+    tuned_model=LogisticRegression(C=params.get('C'),
+    solver=params.get('solver'),
+    penalty=params.get('penalty'), 
+    max_iter=params.get('max_iter'))
+
+    # add the meta model
+    ensemble.add_meta(tuned_model)
+    return ensemble
+
+# create the super learner
+def get_super_learner_base(X):
+    ensemble_base = SuperLearner(scorer=accuracy_score, folds=10, shuffle=True, sample_size=len(X))
+    # add base models
+    models = get_models()
+    ensemble_base.add(models)
+
+    # add the meta model
+    ensemble_base.add_meta(LogisticRegression(solver='lbfgs'))
+    return ensemble_base
+
+#plot confusion matrix as well as classification report #NOTE NEEDS SOME FORMATTING WORK
+def plot_confusion_matrix(cm, classes, normalize=False, title='Confusion matrix', cmap=plt.cm.Blues):
+    plt.figure()
+    
+    #table
+    plt.subplot(224)
+    report=classification_report(y_val, yhat,target_names=['didnt withdraw','withdrew'],output_dict=True) #ignore this error
+    df = pd.DataFrame(report).transpose()
+    cell_text = []
+    for row in range(len(df)):
+        cell_text.append(df.iloc[row])
+    plt.table(cellText=cell_text,rowLabels=df.index, colLabels=df.columns, loc='center')
+    plt.axis('off')
+    
+    #cm
+    plt.subplot(222)
+    plt.imshow(cm, interpolation='nearest', cmap=cmap)
+    plt.title(title)
+    plt.colorbar()
+    tick_marks = np.arange(len(classes))
+    plt.xticks(tick_marks, classes, rotation=45)
+    plt.yticks(tick_marks, classes)
+    thresh = cm.max() / 2.
+    for i, j in itertools.product(range(cm.shape[0]), range(cm.shape[1])):
+      plt.text(j, i, cm[i, j],
+      horizontalalignment="center",
+      color="white" if cm[i, j] > thresh else "black")
+    plt.tight_layout()
+    plt.ylabel('True label')
+    plt.xlabel('Predicted label')
+    plt.show()
+    
+#set up directory
+os.getcwd()
+os.chdir('')
+combined_df=pd.read_csv('combined_df.csv')
+   
+#prepare data     
+cols_to_remove=['application_year','acceptance_year','Count','Alternative Offer Marker',
+                                     'Withdrawal Reason Group',
                                      'Programme Code', 
                                      #'Current Sub-Discipline',#putting on seperate lines to make it easier to comment out during model tuning
                                      'application_discipline_code',
                                      'acceptance_discipline_code',
                                      'Withdrawal Marker', 'Student Code', 
                                      'Cohort Year', 'application_admissions_code','application_timestamp', 
-                                     'acceptance_admissions_code','acceptance_timestamp'], axis=1))
-y = combined_df['Withdrawal Marker'].apply(lambda x: 1 if x=='Y' else 0)
+                                     'acceptance_admissions_code','acceptance_timestamp']
 
-#SMOTE minor class balancer #https://arxiv.org/pdf/1106.1813.pdf due to imbalanced classes
-os = SMOTE(random_state=36)
-X,y = os.fit_resample(X, y)
-y = pd.DataFrame(data=y,columns=['Withdrawal Marker'])
-del(os)
+X, X_val, y, y_val,X_cols=prep_features_and_targets(combined_df,cols_to_remove,'Withdrawal Marker')
+del(cols_to_remove)
 
-#split df into training and testing
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=.2,random_state=36,stratify=y)
+#create super learner and predict data
+ensemble= get_super_learner(X)
+ensemble.fit(X, y)
+data=pd.DataFrame(ensemble.data) #summarize base learners
+yhat = ensemble.predict(X_val)
 
-#define model and compile
-model = Sequential()
-model.add(Dense(units=32, activation='relu', input_dim=len(X_train.columns)))
-model.add(Dense(units=64, activation='relu'))
-model.add(Dense(units=1, activation='sigmoid'))
-model.compile(loss='binary_crossentropy', optimizer='sgd', metrics='accuracy')
+#assess loss (Brier score) and accuracy of tuned/best base model
+# print('Tuned Super Learner Brier Score: %.3f' % (brier_score_loss(y_val, yhat)))
+# print('Super Learner Accuracy: %.3f' % (accuracy_score(y_val, yhat) * 100))
+# print(str(data.sort_values('score-m', ascending=False).index[0])+': %.3f' % (data.sort_values('score-m', ascending=False).iat[0,0]*100))
 
-#fit
-model.fit(X_train, y_train, epochs=200, batch_size=32)
+#clean up
+del(X_cols,y,X_val,data,X)
 
-#predict
-y_hat = model.predict(X_test)
-y_hat = [0 if val < 0.5 else 1 for val in y_hat]
-accuracy_score(y_test, y_hat)
-
-#add confusion matrix from sci-kit learn's site:
-def plot_confusion_matrix(cm, classes, normalize=False, title='Confusion matrix', cmap=plt.cm.Blues):
- plt.imshow(cm, interpolation='nearest', cmap=cmap)
- plt.title(title)
- plt.colorbar()
- tick_marks = np.arange(len(classes))
- plt.xticks(tick_marks, classes, rotation=45)
- plt.yticks(tick_marks, classes)
- 
-cm = confusion_matrix(y_true=y_test, y_pred=y_hat) 
-thresh = cm.max() / 2.
-for i, j in itertools.product(range(cm.shape[0]), range(cm.shape[1])):
- plt.text(j, i, cm[i, j],
- horizontalalignment="center",
- color="white" if cm[i, j] > thresh else "black")
-plt.tight_layout()
-plt.ylabel('True label')
-plt.xlabel('Predicted label')
+#visualise confusion matrix
+cm = confusion_matrix(y_true=y_val, y_pred=yhat) 
 cm_plot_labels = ['Didnt withdraw', 'Withdrew']
+#fig.savefig('./confusion matrix.png', bbox_inches='tight')
 plot_confusion_matrix(cm=cm, classes=cm_plot_labels, title='Confusion Matrix')
-plt.show()
-del(cm_plot_labels,i,j,thresh)
+del(cm,cm_plot_labels,yhat,y_val)
 
-#print report
-print(classification_report(y_test, y_hat))
-
-#save model if it's performing well
-model.save('ddmmyyyy_alternative_offer_withdrawal_tf_prediction')
-
-del(X,X_test,X_train,y,y_hat,y_test,y_train)
+#save model
+filename = 'finalized_model.sav' #could include dynamic date entry so that we always have older versions
+pickle.dump(ensemble, open(filename, 'wb'))
+del(ensemble,filename,combined_df)
 
 # =============================================================================
-# # Predictive analysis (what will happen?) 
+# # Predictive analysis (what will happen) 
 # =============================================================================
 
-#load new years data and discard extraneous columns
-admissions_data=pd.read_csv('New Admisions Data.csv')
+import os
+import pandas as pd
+import pickle
+import numpy as np
+from sklearn.preprocessing import OrdinalEncoder
+from mlens.ensemble import SuperLearner
+
+# load the model from disk
+filename = 'finalized_model.sav'
+loaded_model = pickle.load(open(filename, 'rb'))
+del(filename)
+
+#set up directory
+os.getcwd()
+os.chdir('')
+os.listdir(os.getcwd())
+
+#load new data
+admissions_data=pd.read_csv('newdata.csv')
 admissions_data=admissions_data[['Student Code','pre_nqa.DRL_IDRC','pre_nqa.drl_timestamp','min_nqa.DRL_IDRC','min_nqa.drl_timestamp','pre_nqa.DRL_MCRC','min_nqa.DRL_MCRC']]
 admissions_data.rename(columns={'pre_nqa.DRL_IDRC':'application_admissions_code','min_nqa.DRL_IDRC':'acceptance_admissions_code','pre_nqa.drl_timestamp':'application_timestamp','min_nqa.drl_timestamp':'acceptance_timestamp','pre_nqa.DRL_MCRC':'application_discipline_code','min_nqa.DRL_MCRC':'acceptance_discipline_code'},inplace=True)
 
-#augment admissions data with day(in week)/month/hour of application/acceptance
-admissions_data['application_timestamp'] = pd.to_datetime(admissions_data['application_timestamp'])
-admissions_data['acceptance_timestamp'] = pd.to_datetime(admissions_data['acceptance_timestamp'])
-admissions_data['application_weekday'] = (admissions_data['application_timestamp'].dt.dayofweek)+1
-admissions_data['application_month'] = admissions_data['application_timestamp'].dt.month
-admissions_data['application_year'] = admissions_data['application_timestamp'].dt.year
-admissions_data['application_hour'] = admissions_data['application_timestamp'].dt.hour
-admissions_data['acceptance_weekday'] = (admissions_data['acceptance_timestamp'].dt.dayofweek)+1
-admissions_data['acceptance_month'] = admissions_data['acceptance_timestamp'].dt.month
-admissions_data['acceptance_year'] = admissions_data['acceptance_timestamp'].dt.year
-admissions_data['acceptance_hour'] = admissions_data['acceptance_timestamp'].dt.hour
+#function to add "_timestamp" to a value from a list, convert the column with that string name to datetime, then augment that column
+def columns_to_datetime(df,stamps,augments):
+    for i in stamps:
+        column=str(i)+'_timestamp'
+        df[column]=pd.to_datetime(df[column])    
+        for j in augments:
+            augmented_column_name=str(i)+'_'+str(j)
+            if j == 'weekday':
+                df[augmented_column_name]=(df[column].dt.dayofweek)+1
+            if j == 'month':
+                df[augmented_column_name]=df[column].dt.month
+            if j == 'year':
+                df[augmented_column_name]=df[column].dt.year
+            if j == 'hour':
+                df[augmented_column_name]=df[column].dt.hour  
+
+#define columns and augments
+timestamps_to_augment=['application','acceptance']
+augments=['weekday','month','year','hour']
+
+#deploy function
+columns_to_datetime(admissions_data,timestamps_to_augment,augments)
+del(timestamps_to_augment,augments)
 
 #augment admissions data by :
     # extracting if application/offer was conditional/unconditional
@@ -291,53 +331,63 @@ admissions_data['firstchoice_application'] = np.where(admissions_data['applicati
 admissions_data['unconditional_application'] = np.where(admissions_data['application_admissions_code'].str[:1] == 'U', 1, 0)
 admissions_data['discipline_code_disparity']=np.where(admissions_data['application_discipline_code'] == admissions_data['acceptance_discipline_code'], 1, 0)
 
-#load student data, filter to relevant students, merge admissions data 
-student_data=pd.read_csv('New Student Data.csv')
-student_data=student_data[student_data['Alternative Offer Marker'] == 'Y']
-student_data.rename(columns={'pre_nqa.Campus':'Campus_Chosen','Campus Group':'Campus_Given'},inplace=True)
-combined_df=pd.merge(student_data,admissions_data,how='left',on='Student Code')
-combined_df['Alternative or original campus'] = np.where(combined_df['Alternative or original campus'] == 'Studying at campus applied to ', 1, 0)
-del(admissions_data,student_data)
+#remove unused columns
+cols_to_remove=['application_year','acceptance_year','Alternative Offer Marker',
+                                     'Programme Code', 
+                                     #'Current Sub-Discipline',#putting on seperate lines to make it easier to comment out during model tuning
+                                     'application_discipline_code',
+                                     'acceptance_discipline_code',
+                                     'Student Code', 
+                                     'Cohort Year', 'application_admissions_code','application_timestamp', 
+                                     'acceptance_admissions_code','acceptance_timestamp']
 
-#split new df into (dummy) features
-X = pd.get_dummies(combined_df.drop(['application_year','acceptance_year','Count','Alternative Offer Marker',
-                                      'Programme Code', 
-                                      #'Current Sub-Discipline',#putting on seperate lines to make it easier to comment out during model tuning
-                                      'application_discipline_code',
-                                      'acceptance_discipline_code',
-                                      'Student Code', 
-                                      'Cohort Year', 'application_admissions_code','application_timestamp', 
-                                      'acceptance_admissions_code','acceptance_timestamp'], axis=1))
-#load trained model
-model=load_model('alternative_offer_withdrawal_tf_prediction')
+#extract features then encode
+def prep_features_for_testing(df,cols_to_remove):
+    X=df
+    for i in cols_to_remove:
+        X=X.drop([i],axis=1)
+    X_col_names=X.columns
+    oe = OrdinalEncoder()
+    oe.fit(X)
+    X = oe.transform(X)
+    X=pd.DataFrame(data=X,columns=X_col_names)
+    return(X)
+X=prep_features_for_testing(admissions_data,cols_to_remove)
+del(cols_to_remove)
 
-#apply trained model to new data
-y_hat = model.predict(X)
-y_hat = [0 if val < 0.5 else 1 for val in y_hat]
-del(X)
-
-#merge predicted withdrawal with admissions data to retrieve discarded columns
-y_hat = pd.DataFrame(data=y_hat,columns=['Withdrawal Marker'])
-admissions_data=pd.read_csv('New Admissions Data.csv')
-admissions_data['min_nqa.DRL_IDRC']=admissions_data['acceptance_admissions_code']
-admissions_data.rename(columns={'pre_nqa.DRL_IDRC':'application_admissions_code','min_nqa.DRL_IDRC':'acceptance_admissions_code','pre_nqa.drl_timestamp':'application_timestamp','min_nqa.drl_timestamp':'acceptance_timestamp','pre_nqa.DRL_MCRC':'application_discipline_code','min_nqa.DRL_MCRC':'acceptance_discipline_code'},inplace=True)
-predicted_df=pd.merge(admissions_data,y_hat,left_index=True,right_index=True)
-predicted_df.to_csv('./predicted_data/predicted_withdrawals.csv',index=False)
-del(y_hat,admissions_data)
+#Predict withdrawals and save results
+admissions_data['Withdrawal_Marker']=loaded_model.predict(X)
+admissions_data.to_csv('./predicted_data/results_df.csv',index=False)
+del(X,admissions_data,loaded_model)
 
 # =============================================================================
 # # Prescriptive analysis (what steps to take)
 # =============================================================================
 
-combined_df=pd.read_csv('./predicted_data/predicted_withdrawals.csv')
+import os
+import pandas as pd
+import numpy as np
+import yagmail
+
+#set up directory
+os.getcwd()
+os.chdir('')
+os.listdir(os.getcwd())
+predicted_df=pd.read_csv('./predicted_data/results_df.csv')
 
 #generate a list of IDs who are predicted to withdraw and send email containing these
-predicted_withdrawal_id=combined_df[combined_df['Withdrawal Marker']==1]['Student Code']
+predicted_withdrawal_id=predicted_df[predicted_df['Withdrawal_Marker']==1]['Student Code']
 predicted_withdrawal_id.to_csv('IDs of students predicted to withdraw.csv',index=False)
 del(predicted_withdrawal_id)
 
-#filter to only students predicted to withdraw
-predicted_df=predicted_df[predicted_df['Withdrawal Marker']==1]
+#generate graphs for withdrawals
+predicted_df_all=predicted_df
+predicted_df=predicted_df[predicted_df['Withdrawal_Marker']==1]
+
+#remove for github anonymising
+predicted_df['Current College'] = (predicted_df.groupby(['Current College']).ngroup()).astype(str)
+predicted_df['Current Sub-Discipline'] = (predicted_df.groupby(['Current Sub-Discipline']).ngroup()).astype(str)
+predicted_df['Campus Group'] = (predicted_df.groupby(['Campus Group']).ngroup()).astype(str)
 
 #loop to create graphs to email out
 for i in ['Current College','Current Sub-Discipline','Campus Group']:
@@ -364,10 +414,8 @@ for i in ['Current College','Current Sub-Discipline','Campus Group']:
     plt.show()    
 del(x,y1,colors,withdrawals,coll_withdrawals,fig,ax,i,j,width)
 
-#generate an intro line to put in the email e.g. 'X/Y predicted withdrawals'
-introtext=('Out of '+str(pd.DataFrame(combined_df['Withdrawal Marker'].value_counts()).iat[0,0])+' entries, '+str(pd.DataFrame(combined_df['Withdrawal Marker'].value_counts()).iat[1,0])+' are predicted to be at risk of withdrawing')
+introtext=('Out of '+str(pd.DataFrame(predicted_df['Withdrawal Marker'].value_counts()).iat[0,0])+' entries, '+str(pd.DataFrame(predicted_df['Withdrawal Marker'].value_counts()).iat[1,0])+' are predicted to be at risk of withdrawing')
 
-#generate a table of granularities and print how many predicted withdrawals are in each group at each level
 messagedata=pd.DataFrame(columns=[''])
 for i in ['Current College','Current Sub-Discipline','Campus Group']:
     variable=i
@@ -378,22 +426,20 @@ for i in ['Current College','Current Sub-Discipline','Campus Group']:
     messagedata.loc[len(messagedata)] =[('At a '+ str(variable)+ ' breakdown:')]   
     for i in range(len(coll_withdrawals)):
         messagedata.loc[len(messagedata)] =[(str(variable)+' '+str(coll_withdrawals.iat[i,0])+': '+str(coll_withdrawals.iat[i,1]))]
-#neaten up for printing
+messagedata.drop(index=messagedata.index[0], axis=0, inplace=True)
 messagedata=messagedata.to_string(index=False)
 
-#Anonymised for Github - uses my email and oauth2 json file
 yag = yagmail.SMTP("", oauth2_file="")
 
-#to can read from a csv file if multiple recipients are required
-to = ''
+to = 'n'
 subject = 'Withdrawal Prediction'
-img1 = './predicted_graphs/Campus Group_predicted_withdrawals.png'
-img2='./predicted_graphs/Current Sub-Discipline_predicted_withdrawals.png'
-img3='./predicted_graphs/Current College_predicted_withdrawals.png'
-idcodes='./predicted_data/IDs of students predicted to withdraw.csv'
+img1 = './Campus Group_predicted_withdrawals.png'
+img2='./Current Sub-Discipline_predicted_withdrawals.png'
+img3='./Current College_predicted_withdrawals.png'
 
+#################################### ANONYMISED FOR GITHUB #################################
 body=f"""
-Dear ,
+Dear Monitor,
 
 Attached are student codes that have been flagged as being predicted to withdraw. Please contact Student Records for identification details
 
@@ -405,6 +451,4 @@ Please see the attached graphs for more information
 Regards,
 Nathan
 """
-
-#send out email with above message, images, and student codes
-yag.send(to = to, subject = subject, contents = body,attachments=[img1,img2,img3,idcodes])
+yag.send(to = to, subject = subject, contents = [body,img1,img2,img3])
